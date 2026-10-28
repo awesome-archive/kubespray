@@ -4,5 +4,10 @@ kind: ServiceAccount
 metadata:
   name: calico-node
   namespace: kube-system
-  labels:
-    kubernetes.io/cluster-service: "true"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: calico-cni-plugin
+  namespace: kube-system

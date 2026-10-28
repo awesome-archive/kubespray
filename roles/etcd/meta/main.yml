@@ -2,4 +2,8 @@
 dependencies:
   - role: adduser
     user: "{{ addusers.etcd }}"
-    when: not (ansible_os_family in ['CoreOS', 'Container Linux by CoreOS', "ClearLinux"] or is_atomic)
+    when: not (ansible_facts['os_family'] in ["Flatcar", "ClearLinux"] or is_fedora_coreos)
+  - role: adduser
+    user: "{{ addusers.kube }}"
+    when: not (ansible_facts['os_family'] in ["Flatcar", "ClearLinux"] or is_fedora_coreos)
+  - role: etcd_defaults

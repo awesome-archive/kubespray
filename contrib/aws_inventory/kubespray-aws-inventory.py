@@ -35,15 +35,18 @@ class SearchEC2Tags(object):
     hosts['_meta'] = { 'hostvars': {} }
 
     ##Search ec2 three times to find nodes of each group type. Relies on kubespray-role key/value.
-    for group in ["kube-master", "kube-node", "etcd"]:
+    for group in ["kube_control_plane", "kube_node", "etcd"]:
       hosts[group] = []
       tag_key = "kubespray-role"
       tag_value = ["*"+group+"*"]
-      region = os.environ['REGION']
+      region = os.environ['AWS_REGION']
 
       ec2 = boto3.resource('ec2', region)
-
-      instances = ec2.instances.filter(Filters=[{'Name': 'tag:'+tag_key, 'Values': tag_value}, {'Name': 'instance-state-name', 'Values': ['running']}])
+      filters = [{'Name': 'tag:'+tag_key, 'Values': tag_value}, {'Name': 'instance-state-name', 'Values': ['running']}]
+      cluster_name = os.getenv('CLUSTER_NAME')
+      if cluster_name:
+        filters.append({'Name': 'tag-key', 'Values': ['kubernetes.io/cluster/'+cluster_name]})
+      instances = ec2.instances.filter(Filters=filters)
       for instance in instances:
 
         ##Suppose default vpc_visibility is private
@@ -64,10 +67,15 @@ class SearchEC2Tags(object):
         if node_labels_tag:
           ansible_host['node_labels'] = dict([ label.strip().split('=') for label in node_labels_tag[0]['Value'].split(',') ])
 
+        ##Set when instance actually has node_taints
+        node_taints_tag = list(filter(lambda t: t['Key'] == 'kubespray-node-taints', instance.tags))
+        if node_taints_tag:
+          ansible_host['node_taints'] = list([ taint.strip() for taint in node_taints_tag[0]['Value'].split(',') ])
+
         hosts[group].append(dns_name)
         hosts['_meta']['hostvars'][dns_name] = ansible_host
-        
-    hosts['k8s-cluster'] = {'children':['kube-master', 'kube-node']}
+
+    hosts['k8s_cluster'] = {'children':['kube_control_plane', 'kube_node']}
     print(json.dumps(hosts, sort_keys=True, indent=2))
 
 SearchEC2Tags()

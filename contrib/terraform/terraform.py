@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 #
 # Copyright 2015 Cisco Systems, Inc.
 #
@@ -20,15 +20,15 @@
 Dynamic inventory for Terraform - finds all `.tfstate` files below the working
 directory and generates an inventory based on them.
 """
-from __future__ import unicode_literals, print_function
 import argparse
 from collections import defaultdict
+import random
 from functools import wraps
 import json
 import os
 import re
 
-VERSION = '0.3.0pre'
+VERSION = '0.4.0pre'
 
 
 def tfstates(root=None):
@@ -38,15 +38,58 @@ def tfstates(root=None):
             if os.path.splitext(name)[-1] == '.tfstate':
                 yield os.path.join(dirpath, name)
 
+def convert_to_v3_structure(attributes, prefix=''):
+    """ Convert the attributes from v4 to v3
+    Receives a dict and return a dictionary """
+    result = {}
+    if isinstance(attributes, str):
+        # In the case when we receive a string (e.g. values for security_groups)
+        return {'{}{}'.format(prefix, random.randint(1,10**10)): attributes}
+    for key, value in attributes.items():
+        if isinstance(value, list):
+            if len(value):
+                result['{}{}.#'.format(prefix, key, hash)] = len(value)
+            for i, v in enumerate(value):
+                result.update(convert_to_v3_structure(v, '{}{}.{}.'.format(prefix, key, i)))
+        elif isinstance(value, dict):
+            result['{}{}.%'.format(prefix, key)] = len(value)
+            for k, v in value.items():
+                result['{}{}.{}'.format(prefix, key, k)] = v
+        else:
+            result['{}{}'.format(prefix, key)] = value
+    return result
 
 def iterresources(filenames):
     for filename in filenames:
         with open(filename, 'r') as json_file:
             state = json.load(json_file)
-            for module in state['modules']:
-                name = module['path'][-1]
-                for key, resource in module['resources'].items():
-                    yield name, key, resource
+            tf_version = state['version']
+            if tf_version == 3:
+                for module in state['modules']:
+                    name = module['path'][-1]
+                    for key, resource in module['resources'].items():
+                        yield name, key, resource
+            elif tf_version == 4:
+                # In version 4 the structure changes so we need to iterate
+                # each instance inside the resource branch.
+                for resource in state['resources']:
+                    name = resource['provider'].split('.')[-1]
+                    for instance in resource['instances']:
+                        key = "{}.{}".format(resource['type'], resource['name'])
+                        if 'index_key' in instance:
+                           key = "{}.{}".format(key, instance['index_key'])
+                        data = {}
+                        data['type'] = resource['type']
+                        data['provider'] = resource['provider']
+                        data['depends_on'] = instance.get('depends_on', [])
+                        data['primary'] = {'attributes': convert_to_v3_structure(instance['attributes'])}
+                        if 'id' in instance['attributes']:
+                           data['primary']['id'] = instance['attributes']['id']
+                        data['primary']['meta'] = instance['attributes'].get('meta',{})
+                        yield name, key, data
+            else:
+                raise KeyError('tfstate version %d not supported' % tf_version)
+
 
 ## READ RESOURCES
 PARSERS = {}
@@ -55,7 +98,7 @@ PARSERS = {}
 def _clean_dc(dcname):
     # Consul DCs are strictly alphanumeric with underscores and hyphens -
     # ensure that the consul_dc attribute meets these requirements.
-    return re.sub('[^\w_\-]', '-', dcname)
+    return re.sub(r'[^\w_\-]', '-', dcname)
 
 
 def iterhosts(resources):
@@ -71,10 +114,10 @@ def iterhosts(resources):
 
 
 def iterips(resources):
-    '''yield ip tuples of (instance_id, ip)'''
+    '''yield ip tuples of (port_id, ip)'''
     for module_name, key, resource in resources:
         resource_type, name = key.split('.', 1)
-        if resource_type == 'openstack_compute_floatingip_associate_v2':
+        if resource_type == 'openstack_networking_floatingip_associate_v2':
             yield openstack_floating_ips(resource)
 
 
@@ -109,7 +152,7 @@ def calculate_mantl_vars(func):
 
 
 def _parse_prefix(source, prefix, sep='.'):
-    for compkey, value in source.items():
+    for compkey, value in list(source.items()):
         try:
             curprefix, rest = compkey.split(sep, 1)
         except ValueError:
@@ -127,7 +170,7 @@ def parse_attr_list(source, prefix, sep='.'):
         idx, key = compkey.split(sep, 1)
         attrs[idx][key] = value
 
-    return attrs.values()
+    return list(attrs.values())
 
 
 def parse_dict(source, prefix, sep='.'):
@@ -139,6 +182,9 @@ def parse_list(source, prefix, sep='.'):
 
 
 def parse_bool(string_form):
+    if type(string_form) is bool:
+        return string_form
+
     token = string_form.lower()[0]
 
     if token == 't':
@@ -148,85 +194,26 @@ def parse_bool(string_form):
     else:
         raise ValueError('could not convert %r to a bool' % string_form)
 
+def sanitize_groups(groups):
+    _groups = []
+    chars_to_replace = ['+', '-', '=', '.', '/', ' ']
+    for i in groups:
+        _i = i
+        for char in chars_to_replace:
+            _i = _i.replace(char, '_')
+        _groups.append(_i)
+    groups.clear()
+    groups.extend(_groups)
 
-@parses('triton_machine')
-@calculate_mantl_vars
-def triton_machine(resource, module_name):
-    raw_attrs = resource['primary']['attributes']
-    name = raw_attrs.get('name')
-    groups = []
-
-    attrs = {
-        'id': raw_attrs['id'],
-        'dataset': raw_attrs['dataset'],
-        'disk': raw_attrs['disk'],
-        'firewall_enabled': parse_bool(raw_attrs['firewall_enabled']),
-        'image': raw_attrs['image'],
-        'ips': parse_list(raw_attrs, 'ips'),
-        'memory': raw_attrs['memory'],
-        'name': raw_attrs['name'],
-        'networks': parse_list(raw_attrs, 'networks'),
-        'package': raw_attrs['package'],
-        'primary_ip': raw_attrs['primaryip'],
-        'root_authorized_keys': raw_attrs['root_authorized_keys'],
-        'state': raw_attrs['state'],
-        'tags': parse_dict(raw_attrs, 'tags'),
-        'type': raw_attrs['type'],
-        'user_data': raw_attrs['user_data'],
-        'user_script': raw_attrs['user_script'],
-
-        # ansible
-        'ansible_ssh_host': raw_attrs['primaryip'],
-        'ansible_ssh_port': 22,
-        'ansible_ssh_user': 'root',  # it's "root" on Triton by default
-
-        # generic
-        'public_ipv4': raw_attrs['primaryip'],
-        'provider': 'triton',
-    }
-
-    # private IPv4
-    for ip in attrs['ips']:
-        if ip.startswith('10') or ip.startswith('192.168'): # private IPs
-            attrs['private_ipv4'] = ip
-            break
-
-    if 'private_ipv4' not in attrs:
-        attrs['private_ipv4'] = attrs['public_ipv4']
-
-    # attrs specific to Mantl
-    attrs.update({
-        'consul_dc': _clean_dc(attrs['tags'].get('dc', 'none')),
-        'role': attrs['tags'].get('role', 'none'),
-        'ansible_python_interpreter': attrs['tags'].get('python_bin', 'python')
-    })
-
-    # add groups based on attrs
-    groups.append('triton_image=' + attrs['image'])
-    groups.append('triton_package=' + attrs['package'])
-    groups.append('triton_state=' + attrs['state'])
-    groups.append('triton_firewall_enabled=%s' % attrs['firewall_enabled'])
-    groups.extend('triton_tags_%s=%s' % item
-                  for item in attrs['tags'].items())
-    groups.extend('triton_network=' + network
-                  for network in attrs['networks'])
-
-    # groups specific to Mantl
-    groups.append('role=' + attrs['role'])
-    groups.append('dc=' + attrs['consul_dc'])
-
-    return name, attrs, groups
-
-
-@parses('packet_device')
-def packet_device(resource, tfvars=None):
+@parses('equinix_metal_device')
+def equinix_metal_device(resource, tfvars=None):
     raw_attrs = resource['primary']['attributes']
     name = raw_attrs['hostname']
     groups = []
 
     attrs = {
         'id': raw_attrs['id'],
-        'facility': raw_attrs['facility'],
+        'facilities': parse_list(raw_attrs, 'facilities'),
         'hostname': raw_attrs['hostname'],
         'operating_system': raw_attrs['operating_system'],
         'locked': parse_bool(raw_attrs['locked']),
@@ -235,129 +222,45 @@ def packet_device(resource, tfvars=None):
         'project_id': raw_attrs['project_id'],
         'state': raw_attrs['state'],
         # ansible
-        'ansible_ssh_host': raw_attrs['network.0.address'],
-        'ansible_ssh_user': 'root',  # it's always "root" on Packet
+        'ansible_host': raw_attrs['network.0.address'],
+        'ansible_ssh_user': 'root',  # Use root by default in metal
         # generic
         'ipv4_address': raw_attrs['network.0.address'],
         'public_ipv4': raw_attrs['network.0.address'],
         'ipv6_address': raw_attrs['network.1.address'],
         'public_ipv6': raw_attrs['network.1.address'],
         'private_ipv4': raw_attrs['network.2.address'],
-        'provider': 'packet',
+        'provider': 'equinix',
     }
 
+    if raw_attrs['operating_system'] == 'flatcar_stable':
+        # For Flatcar set the ssh_user to core
+        attrs.update({'ansible_ssh_user': 'core'})
+
     # add groups based on attrs
-    groups.append('packet_facility=' + attrs['facility'])
-    groups.append('packet_operating_system=' + attrs['operating_system'])
-    groups.append('packet_locked=%s' % attrs['locked'])
-    groups.append('packet_state=' + attrs['state'])
-    groups.append('packet_plan=' + attrs['plan'])
+    groups.append('equinix_metal_operating_system_%s' % attrs['operating_system'])
+    groups.append('equinix_metal_locked_%s' % attrs['locked'])
+    groups.append('equinix_metal_state_%s' % attrs['state'])
+    groups.append('equinix_metal_plan_%s' % attrs['plan'])
 
     # groups specific to kubespray
     groups = groups + attrs['tags']
+    sanitize_groups(groups)
 
     return name, attrs, groups
 
-
-@parses('digitalocean_droplet')
-@calculate_mantl_vars
-def digitalocean_host(resource, tfvars=None):
-    raw_attrs = resource['primary']['attributes']
-    name = raw_attrs['name']
-    groups = []
-
-    attrs = {
-        'id': raw_attrs['id'],
-        'image': raw_attrs['image'],
-        'ipv4_address': raw_attrs['ipv4_address'],
-        'locked': parse_bool(raw_attrs['locked']),
-        'metadata': json.loads(raw_attrs.get('user_data', '{}')),
-        'region': raw_attrs['region'],
-        'size': raw_attrs['size'],
-        'ssh_keys': parse_list(raw_attrs, 'ssh_keys'),
-        'status': raw_attrs['status'],
-        # ansible
-        'ansible_ssh_host': raw_attrs['ipv4_address'],
-        'ansible_ssh_port': 22,
-        'ansible_ssh_user': 'root',  # it's always "root" on DO
-        # generic
-        'public_ipv4': raw_attrs['ipv4_address'],
-        'private_ipv4': raw_attrs.get('ipv4_address_private',
-                                      raw_attrs['ipv4_address']),
-        'provider': 'digitalocean',
-    }
-
-    # attrs specific to Mantl
-    attrs.update({
-        'consul_dc': _clean_dc(attrs['metadata'].get('dc', attrs['region'])),
-        'role': attrs['metadata'].get('role', 'none'),
-        'ansible_python_interpreter': attrs['metadata'].get('python_bin','python')
-    })
-
-    # add groups based on attrs
-    groups.append('do_image=' + attrs['image'])
-    groups.append('do_locked=%s' % attrs['locked'])
-    groups.append('do_region=' + attrs['region'])
-    groups.append('do_size=' + attrs['size'])
-    groups.append('do_status=' + attrs['status'])
-    groups.extend('do_metadata_%s=%s' % item
-                  for item in attrs['metadata'].items())
-
-    # groups specific to Mantl
-    groups.append('role=' + attrs['role'])
-    groups.append('dc=' + attrs['consul_dc'])
-
-    return name, attrs, groups
-
-
-@parses('softlayer_virtualserver')
-@calculate_mantl_vars
-def softlayer_host(resource, module_name):
-    raw_attrs = resource['primary']['attributes']
-    name = raw_attrs['name']
-    groups = []
-
-    attrs = {
-        'id': raw_attrs['id'],
-        'image': raw_attrs['image'],
-        'ipv4_address': raw_attrs['ipv4_address'],
-        'metadata': json.loads(raw_attrs.get('user_data', '{}')),
-        'region': raw_attrs['region'],
-        'ram': raw_attrs['ram'],
-        'cpu': raw_attrs['cpu'],
-        'ssh_keys': parse_list(raw_attrs, 'ssh_keys'),
-        'public_ipv4': raw_attrs['ipv4_address'],
-        'private_ipv4': raw_attrs['ipv4_address_private'],
-        'ansible_ssh_host': raw_attrs['ipv4_address'],
-        'ansible_ssh_port': 22,
-        'ansible_ssh_user': 'root',
-        'provider': 'softlayer',
-    }
-
-    # attrs specific to Mantl
-    attrs.update({
-        'consul_dc': _clean_dc(attrs['metadata'].get('dc', attrs['region'])),
-        'role': attrs['metadata'].get('role', 'none'),
-        'ansible_python_interpreter': attrs['metadata'].get('python_bin','python')
-    })
-
-    # groups specific to Mantl
-    groups.append('role=' + attrs['role'])
-    groups.append('dc=' + attrs['consul_dc'])
-
-    return name, attrs, groups
 
 def openstack_floating_ips(resource):
     raw_attrs = resource['primary']['attributes']
     attrs = {
         'ip': raw_attrs['floating_ip'],
-        'instance_id': raw_attrs['instance_id'],
+        'port_id': raw_attrs['port_id'],
     }
     return attrs
 
 def openstack_floating_ips(resource):
     raw_attrs = resource['primary']['attributes']
-    return raw_attrs['instance_id'], raw_attrs['floating_ip']
+    return raw_attrs['port_id'], raw_attrs['floating_ip']
 
 @parses('openstack_compute_instance_v2')
 @calculate_mantl_vars
@@ -370,6 +273,7 @@ def openstack_host(resource, module_name):
         'access_ip_v4': raw_attrs['access_ip_v4'],
         'access_ip_v6': raw_attrs['access_ip_v6'],
         'access_ip': raw_attrs['access_ip_v4'],
+        'access_ip6': raw_attrs['access_ip_v6'],
         'ip': raw_attrs['network.0.fixed_ip_v4'],
         'flavor': parse_dict(raw_attrs, 'flavor',
                              sep='_'),
@@ -381,8 +285,6 @@ def openstack_host(resource, module_name):
         'network': parse_attr_list(raw_attrs, 'network'),
         'region': raw_attrs.get('region', ''),
         'security_groups': parse_list(raw_attrs, 'security_groups'),
-        # ansible
-        'ansible_ssh_port': 22,
         # workaround for an OpenStack bug where hosts have a different domain
         # after they're restarted
         'host_domain': 'novalocal',
@@ -390,29 +292,41 @@ def openstack_host(resource, module_name):
         # generic
         'public_ipv4': raw_attrs['access_ip_v4'],
         'private_ipv4': raw_attrs['access_ip_v4'],
+        'port_id' : raw_attrs['network.0.port'],
         'provider': 'openstack',
     }
 
     if 'floating_ip' in raw_attrs:
         attrs['private_ipv4'] = raw_attrs['network.0.fixed_ip_v4']
 
+    if 'metadata.use_access_ip' in raw_attrs and raw_attrs['metadata.use_access_ip'] == "0":
+        attrs.pop('access_ip')
+
     try:
-        attrs.update({
-            'ansible_ssh_host': raw_attrs['access_ip_v4'],
-            'publicly_routable': True,
-        })
+        if 'metadata.prefer_ipv6' in raw_attrs and raw_attrs['metadata.prefer_ipv6'] == "1":
+            attrs.update({
+                'ansible_host': re.sub(r"[\[\]]", "", raw_attrs['access_ip_v6']),
+                'publicly_routable': True,
+            })
+        else:
+            attrs.update({
+                'ansible_host': raw_attrs['access_ip_v4'],
+                'publicly_routable': True,
+            })
     except (KeyError, ValueError):
-        attrs.update({'ansible_ssh_host': '', 'publicly_routable': False})
+        attrs.update({'ansible_host': '', 'publicly_routable': False})
 
     # Handling of floating IPs has changed: https://github.com/terraform-providers/terraform-provider-openstack/blob/master/CHANGELOG.md#010-june-21-2017
 
     # attrs specific to Ansible
     if 'metadata.ssh_user' in raw_attrs:
-        attrs['ansible_ssh_user'] = raw_attrs['metadata.ssh_user']
+        attrs['ansible_user'] = raw_attrs['metadata.ssh_user']
+    if 'metadata.ssh_port' in raw_attrs:
+        attrs['ansible_port'] = raw_attrs['metadata.ssh_port']
 
-    if 'volume.#' in raw_attrs.keys() and int(raw_attrs['volume.#']) > 0:
+    if 'volume.#' in list(raw_attrs.keys()) and int(raw_attrs['volume.#']) > 0:
         device_index = 1
-        for key, value in raw_attrs.items():
+        for key, value in list(raw_attrs.items()):
             match = re.search("^volume.*.device$", key)
             if match:
                 attrs['disk_volume_device_'+str(device_index)] = value
@@ -421,316 +335,43 @@ def openstack_host(resource, module_name):
 
     # attrs specific to Mantl
     attrs.update({
-        'consul_dc': _clean_dc(attrs['metadata'].get('dc', module_name)),
-        'role': attrs['metadata'].get('role', 'none'),
-        'ansible_python_interpreter': attrs['metadata'].get('python_bin','python')
+        'role': attrs['metadata'].get('role', 'none')
     })
 
     # add groups based on attrs
-    groups.append('os_image=' + attrs['image']['name'])
-    groups.append('os_flavor=' + attrs['flavor']['name'])
+    groups.append('os_image=' + str(attrs['image']['id']))
+    groups.append('os_flavor=' + str(attrs['flavor']['name']))
     groups.extend('os_metadata_%s=%s' % item
-                  for item in attrs['metadata'].items())
-    groups.append('os_region=' + attrs['region'])
-
-    # groups specific to Mantl
-    groups.append('role=' + attrs['metadata'].get('role', 'none'))
-    groups.append('dc=' + attrs['consul_dc'])
+                  for item in list(attrs['metadata'].items()))
+    groups.append('os_region=' + str(attrs['region']))
 
     # groups specific to kubespray
     for group in attrs['metadata'].get('kubespray_groups', "").split(","):
         groups.append(group)
 
-    return name, attrs, groups
+    sanitize_groups(groups)
 
-
-@parses('aws_instance')
-@calculate_mantl_vars
-def aws_host(resource, module_name):
-    name = resource['primary']['attributes']['tags.Name']
-    raw_attrs = resource['primary']['attributes']
-
-    groups = []
-
-    attrs = {
-        'ami': raw_attrs['ami'],
-        'availability_zone': raw_attrs['availability_zone'],
-        'ebs_block_device': parse_attr_list(raw_attrs, 'ebs_block_device'),
-        'ebs_optimized': parse_bool(raw_attrs['ebs_optimized']),
-        'ephemeral_block_device': parse_attr_list(raw_attrs,
-                                                  'ephemeral_block_device'),
-        'id': raw_attrs['id'],
-        'key_name': raw_attrs['key_name'],
-        'private': parse_dict(raw_attrs, 'private',
-                              sep='_'),
-        'public': parse_dict(raw_attrs, 'public',
-                             sep='_'),
-        'root_block_device': parse_attr_list(raw_attrs, 'root_block_device'),
-        'security_groups': parse_list(raw_attrs, 'security_groups'),
-        'subnet': parse_dict(raw_attrs, 'subnet',
-                             sep='_'),
-        'tags': parse_dict(raw_attrs, 'tags'),
-        'tenancy': raw_attrs['tenancy'],
-        'vpc_security_group_ids': parse_list(raw_attrs,
-                                             'vpc_security_group_ids'),
-        # ansible-specific
-        'ansible_ssh_port': 22,
-        'ansible_ssh_host': raw_attrs['public_ip'],
-        # generic
-        'public_ipv4': raw_attrs['public_ip'],
-        'private_ipv4': raw_attrs['private_ip'],
-        'provider': 'aws',
-    }
-
-    # attrs specific to Ansible
-    if 'tags.sshUser' in raw_attrs:
-        attrs['ansible_ssh_user'] = raw_attrs['tags.sshUser']
-    if 'tags.sshPrivateIp' in raw_attrs:
-        attrs['ansible_ssh_host'] = raw_attrs['private_ip']
-
-    # attrs specific to Mantl
-    attrs.update({
-        'consul_dc': _clean_dc(attrs['tags'].get('dc', module_name)),
-        'role': attrs['tags'].get('role', 'none'),
-        'ansible_python_interpreter': attrs['tags'].get('python_bin','python')
-    })
-
-    # groups specific to Mantl
-    groups.extend(['aws_ami=' + attrs['ami'],
-                   'aws_az=' + attrs['availability_zone'],
-                   'aws_key_name=' + attrs['key_name'],
-                   'aws_tenancy=' + attrs['tenancy']])
-    groups.extend('aws_tag_%s=%s' % item for item in attrs['tags'].items())
-    groups.extend('aws_vpc_security_group=' + group
-                  for group in attrs['vpc_security_group_ids'])
-    groups.extend('aws_subnet_%s=%s' % subnet
-                  for subnet in attrs['subnet'].items())
-
-    # groups specific to Mantl
-    groups.append('role=' + attrs['role'])
-    groups.append('dc=' + attrs['consul_dc'])
-
-    return name, attrs, groups
-
-
-@parses('google_compute_instance')
-@calculate_mantl_vars
-def gce_host(resource, module_name):
-    name = resource['primary']['id']
-    raw_attrs = resource['primary']['attributes']
-    groups = []
-
-    # network interfaces
-    interfaces = parse_attr_list(raw_attrs, 'network_interface')
-    for interface in interfaces:
-        interface['access_config'] = parse_attr_list(interface,
-                                                     'access_config')
-        for key in interface.keys():
-            if '.' in key:
-                del interface[key]
-
-    # general attrs
-    attrs = {
-        'can_ip_forward': raw_attrs['can_ip_forward'] == 'true',
-        'disks': parse_attr_list(raw_attrs, 'disk'),
-        'machine_type': raw_attrs['machine_type'],
-        'metadata': parse_dict(raw_attrs, 'metadata'),
-        'network': parse_attr_list(raw_attrs, 'network'),
-        'network_interface': interfaces,
-        'self_link': raw_attrs['self_link'],
-        'service_account': parse_attr_list(raw_attrs, 'service_account'),
-        'tags': parse_list(raw_attrs, 'tags'),
-        'zone': raw_attrs['zone'],
-        # ansible
-        'ansible_ssh_port': 22,
-        'provider': 'gce',
-    }
-
-    # attrs specific to Ansible
-    if 'metadata.ssh_user' in raw_attrs:
-        attrs['ansible_ssh_user'] = raw_attrs['metadata.ssh_user']
-
-    # attrs specific to Mantl
-    attrs.update({
-        'consul_dc': _clean_dc(attrs['metadata'].get('dc', module_name)),
-        'role': attrs['metadata'].get('role', 'none'),
-        'ansible_python_interpreter': attrs['metadata'].get('python_bin','python')
-    })
-
-    try:
-        attrs.update({
-            'ansible_ssh_host': interfaces[0]['access_config'][0]['nat_ip'] or interfaces[0]['access_config'][0]['assigned_nat_ip'],
-            'public_ipv4': interfaces[0]['access_config'][0]['nat_ip'] or interfaces[0]['access_config'][0]['assigned_nat_ip'],
-            'private_ipv4': interfaces[0]['address'],
-            'publicly_routable': True,
-        })
-    except (KeyError, ValueError):
-        attrs.update({'ansible_ssh_host': '', 'publicly_routable': False})
-
-    # add groups based on attrs
-    groups.extend('gce_image=' + disk['image'] for disk in attrs['disks'])
-    groups.append('gce_machine_type=' + attrs['machine_type'])
-    groups.extend('gce_metadata_%s=%s' % (key, value)
-                  for (key, value) in attrs['metadata'].items()
-                  if key not in set(['sshKeys']))
-    groups.extend('gce_tag=' + tag for tag in attrs['tags'])
-    groups.append('gce_zone=' + attrs['zone'])
-
-    if attrs['can_ip_forward']:
-        groups.append('gce_ip_forward')
-    if attrs['publicly_routable']:
-        groups.append('gce_publicly_routable')
-
-    # groups specific to Mantl
-    groups.append('role=' + attrs['metadata'].get('role', 'none'))
-    groups.append('dc=' + attrs['consul_dc'])
-
-    return name, attrs, groups
-
-
-@parses('vsphere_virtual_machine')
-@calculate_mantl_vars
-def vsphere_host(resource, module_name):
-    raw_attrs = resource['primary']['attributes']
-    network_attrs = parse_dict(raw_attrs, 'network_interface')
-    network = parse_dict(network_attrs, '0')
-    ip_address = network.get('ipv4_address', network['ip_address'])
-    name = raw_attrs['name']
-    groups = []
-
-    attrs = {
-        'id': raw_attrs['id'],
-        'ip_address': ip_address,
-        'private_ipv4': ip_address,
-        'public_ipv4': ip_address,
-        'metadata': parse_dict(raw_attrs, 'custom_configuration_parameters'),
-        'ansible_ssh_port': 22,
-        'provider': 'vsphere',
-    }
-
-    try:
-        attrs.update({
-            'ansible_ssh_host': ip_address,
-        })
-    except (KeyError, ValueError):
-        attrs.update({'ansible_ssh_host': '', })
-
-    attrs.update({
-        'consul_dc': _clean_dc(attrs['metadata'].get('consul_dc', module_name)),
-        'role': attrs['metadata'].get('role', 'none'),
-        'ansible_python_interpreter': attrs['metadata'].get('python_bin','python')
-    })
-
-    # attrs specific to Ansible
-    if 'ssh_user' in attrs['metadata']:
-        attrs['ansible_ssh_user'] = attrs['metadata']['ssh_user']
-
-    groups.append('role=' + attrs['role'])
-    groups.append('dc=' + attrs['consul_dc'])
-
-    return name, attrs, groups
-
-@parses('azure_instance')
-@calculate_mantl_vars
-def azure_host(resource, module_name):
-    name = resource['primary']['attributes']['name']
-    raw_attrs = resource['primary']['attributes']
-
-    groups = []
-
-    attrs = {
-        'automatic_updates': raw_attrs['automatic_updates'],
-        'description': raw_attrs['description'],
-        'hosted_service_name': raw_attrs['hosted_service_name'],
-        'id': raw_attrs['id'],
-        'image': raw_attrs['image'],
-        'ip_address': raw_attrs['ip_address'],
-        'location': raw_attrs['location'],
-        'name': raw_attrs['name'],
-        'reverse_dns': raw_attrs['reverse_dns'],
-        'security_group': raw_attrs['security_group'],
-        'size': raw_attrs['size'],
-        'ssh_key_thumbprint': raw_attrs['ssh_key_thumbprint'],
-        'subnet': raw_attrs['subnet'],
-        'username': raw_attrs['username'],
-        'vip_address': raw_attrs['vip_address'],
-        'virtual_network': raw_attrs['virtual_network'],
-        'endpoint': parse_attr_list(raw_attrs, 'endpoint'),
-        # ansible
-        'ansible_ssh_port': 22,
-        'ansible_ssh_user': raw_attrs['username'],
-        'ansible_ssh_host': raw_attrs['vip_address'],
-    }
-
-    # attrs specific to mantl
-    attrs.update({
-        'consul_dc': attrs['location'].lower().replace(" ", "-"),
-        'role': attrs['description']
-    })
-
-    # groups specific to mantl
-    groups.extend(['azure_image=' + attrs['image'],
-                   'azure_location=' + attrs['location'].lower().replace(" ", "-"),
-                   'azure_username=' + attrs['username'],
-                   'azure_security_group=' + attrs['security_group']])
-
-    # groups specific to mantl
-    groups.append('role=' + attrs['role'])
-    groups.append('dc=' + attrs['consul_dc'])
-
-    return name, attrs, groups
-
-
-@parses('clc_server')
-@calculate_mantl_vars
-def clc_server(resource, module_name):
-    raw_attrs = resource['primary']['attributes']
-    name = raw_attrs.get('id')
-    groups = []
-    md = parse_dict(raw_attrs, 'metadata')
-    attrs = {
-        'metadata': md,
-        'ansible_ssh_port': md.get('ssh_port', 22),
-        'ansible_ssh_user': md.get('ssh_user', 'root'),
-        'provider': 'clc',
-        'publicly_routable': False,
-    }
-
-    try:
-        attrs.update({
-            'public_ipv4': raw_attrs['public_ip_address'],
-            'private_ipv4': raw_attrs['private_ip_address'],
-            'ansible_ssh_host': raw_attrs['public_ip_address'],
-            'publicly_routable': True,
-        })
-    except (KeyError, ValueError):
-        attrs.update({
-            'ansible_ssh_host': raw_attrs['private_ip_address'],
-            'private_ipv4': raw_attrs['private_ip_address'],
-        })
-
-    attrs.update({
-        'consul_dc': _clean_dc(attrs['metadata'].get('dc', module_name)),
-        'role': attrs['metadata'].get('role', 'none'),
-    })
-
-    groups.append('role=' + attrs['role'])
-    groups.append('dc=' + attrs['consul_dc'])
     return name, attrs, groups
 
 
 def iter_host_ips(hosts, ips):
     '''Update hosts that have an entry in the floating IP list'''
     for host in hosts:
-        host_id = host[1]['id']
-        if host_id in ips:
-            ip = ips[host_id]
+        port_id = host[1]['port_id']
+
+        if port_id in ips:
+            ip = ips[port_id]
+
             host[1].update({
                 'access_ip_v4': ip,
                 'access_ip': ip,
                 'public_ipv4': ip,
-                'ansible_ssh_host': ip,
+                'ansible_host': ip,
             })
+
+        if 'use_access_ip' in host[1]['metadata'] and host[1]['metadata']['use_access_ip'] == "0" and 'access_ip' in host[1]:
+                host[1].pop('access_ip')
+
         yield host
 
 
@@ -765,7 +406,7 @@ def query_list(hosts):
 def query_hostfile(hosts):
     out = ['## begin hosts generated by terraform.py ##']
     out.extend(
-        '{}\t{}'.format(attrs['ansible_ssh_host'].ljust(16), name)
+        '{}\t{}'.format(attrs['ansible_host'].ljust(16), name)
         for name, attrs, _ in hosts
     )
 

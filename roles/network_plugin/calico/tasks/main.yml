@@ -1,13 +1,9 @@
 ---
-- include_tasks: check.yml
+- name: Calico Pre tasks
+  import_tasks: pre.yml
 
-- include_tasks: pre.yml
+- name: Calico repos
+  import_tasks: repos.yml
 
-- import_tasks: upgrade.yml
-  when:
-    - calico_upgrade_enabled
-    - calico_upgrade_needed
-  run_once: yes
-  delegate_to: "{{ groups['kube-master'][0] }}"
-
-- include_tasks: install.yml
+- name: Calico install
+  include_tasks: install.yml

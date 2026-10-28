@@ -1,117 +1,147 @@
 ---
-- name: Set kubeadm_discovery_address
-  set_fact:
-    kubeadm_discovery_address: >-
-      {%- if "127.0.0.1" in kube_apiserver_endpoint or "localhost" in kube_apiserver_endpoint -%}
-      {{ first_kube_master }}:{{ kube_apiserver_port }}
-      {%- else -%}
-      {{ kube_apiserver_endpoint }}
-      {%- endif %}
-  tags:
-    - facts
-
 - name: Check if kubelet.conf exists
   stat:
     path: "{{ kube_config_dir }}/kubelet.conf"
+    get_attributes: false
+    get_checksum: false
+    get_mime: false
   register: kubelet_conf
 
-- name: Calculate kubeadm CA cert hash
-  shell: openssl x509 -pubkey -in {{ kube_cert_dir }}/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'
-  register: kubeadm_ca_hash
-  delegate_to: "{{ groups['kube-master'][0] }}"
+- name: Check if kubeadm CA cert is accessible
+  stat:
+    path: "{{ kube_cert_dir }}/ca.crt"
+    get_attributes: false
+    get_checksum: false
+    get_mime: false
+  register: kubeadm_ca_stat
+  delegate_to: "{{ groups['kube_control_plane'][0] }}"
+  run_once: true
+
+- name: Fetch CA certificate from control plane node
+  slurp:
+    src: "{{ kube_cert_dir }}/ca.crt"
+  register: ca_cert_content
+  when:
+    - kubeadm_ca_stat.stat is defined
+    - kubeadm_ca_stat.stat.exists
+  delegate_to: "{{ groups['kube_control_plane'][0] }}"
   run_once: true
 
 - name: Create kubeadm token for joining nodes with 24h expiration (default)
-  command: "{{ bin_dir }}/kubeadm token create"
-  run_once: true
+  command: "{{ bin_dir }}/kubeadm token create --config={{ kube_config_dir }}/kubeadm-config.yaml"
   register: temp_token
-  delegate_to: "{{ groups['kube-master'][0] }}"
+  delegate_to: "{{ groups['kube_control_plane'][0] }}"
+  when: kubeadm_token is not defined
+  changed_when: false
 
-- name: gets the kubeadm version
-  command: "{{ bin_dir }}/kubeadm version -o short"
-  register: kubeadm_output
-
-- name: sets kubeadm api version to v1alpha1
+- name: Set kubeadm_token to generated token
   set_fact:
-    kubeadmConfig_api_version: v1alpha1
-  when: kubeadm_output.stdout is version('v1.11.0', '<')
+    kubeadm_token: "{{ temp_token.stdout }}"
+  when: kubeadm_token is not defined
 
-- name: sets kubeadm api version to v1alpha2
-  set_fact:
-    kubeadmConfig_api_version: v1alpha2
+- name: Get kubeconfig for join discovery process
+  command: "{{ kubectl }} -n kube-public get cm cluster-info -o jsonpath='{.data.kubeconfig}'"
+  register: kubeconfig_file_discovery
+  run_once: true
+  delegate_to: "{{ groups['kube_control_plane'] | first }}"
+  when: kubeadm_use_file_discovery
+
+- name: Check if discovery kubeconfig exists
+  stat:
+    path: "{{ kube_config_dir }}/cluster-info-discovery-kubeconfig.yaml"
+  register: cluster_info_discovery_kubeconfig
+
+- name: Copy discovery kubeconfig
+  copy:
+    dest: "{{ kube_config_dir }}/cluster-info-discovery-kubeconfig.yaml"
+    content: "{{ kubeconfig_file_discovery.stdout }}"
+    owner: "root"
+    mode: "0644"
   when:
-    - kubeadm_output.stdout is version('v1.11.0', '>=')
-    - kubeadm_output.stdout is version('v1.12.0', '<')
-
-- name: sets kubeadm api version to v1alpha3
-  set_fact:
-    kubeadmConfig_api_version: v1alpha3
-  when:
-    - kubeadm_output.stdout is version('v1.12.0', '>=')
-    - kubeadm_output.stdout is version('v1.13.0', '<')
-
-- name: sets kubeadm api version to v1beta1
-  set_fact:
-    kubeadmConfig_api_version: v1beta1
-  when: kubeadm_output.stdout is version('v1.13.0', '>=')
+    - ('kube_control_plane' not in group_names)
+    - not kubelet_conf.stat.exists or not cluster_info_discovery_kubeconfig.stat.exists
+    - kubeadm_use_file_discovery
 
 - name: Create kubeadm client config
   template:
-    src: "kubeadm-client.conf.{{ kubeadmConfig_api_version }}.j2"
+    src: "kubeadm-client.conf.j2"
     dest: "{{ kube_config_dir }}/kubeadm-client.conf"
-    backup: yes
-  when: not is_kube_master
-  vars:
-    kubeadm_token: "{{ temp_token.stdout }}"
+    backup: true
+    mode: "0640"
+    validate: "{{ kubeadm_config_validate_enabled | ternary(bin_dir + '/kubeadm config validate --config %s', omit) }}"
+  when: ('kube_control_plane' not in group_names)
 
 - name: Join to cluster if needed
-  command: >-
-    {{ bin_dir }}/kubeadm join
-    --config {{ kube_config_dir}}/kubeadm-client.conf
-    --ignore-preflight-errors=all
-  register: kubeadm_join
-  when: not is_kube_master and (not kubelet_conf.stat.exists)
   environment:
-    PATH: "{{ bin_dir }}:{{ ansible_env.PATH }}"
-
-- name: Wait for kubelet bootstrap to create config
-  wait_for:
-    path: "{{ kube_config_dir }}/kubelet.conf"
-    delay: 1
-    timeout: 60
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH }}:/sbin"
+  when:
+    - ('kube_control_plane' not in group_names)
+    - not kubelet_conf.stat.exists
+  vars:
+    ignored:
+      - "{{ 'DirAvailable--etc-kubernetes-manifests' if 'all' not in kubeadm_ignore_preflight_errors }}"
+      - "{{ kubeadm_ignore_preflight_errors }}"
+  command: >-
+    timeout -k {{ kubeadm_join_timeout }} {{ kubeadm_join_timeout }}
+    {{ bin_dir }}/kubeadm join
+    --config {{ kube_config_dir }}/kubeadm-client.conf
+    --ignore-preflight-errors={{ ignored | select | flatten | join(',') }}
+    --skip-phases={{ kubeadm_join_phases_skip | join(',') }}
 
 - name: Update server field in kubelet kubeconfig
   lineinfile:
     dest: "{{ kube_config_dir }}/kubelet.conf"
-    regexp: 'server:'
-    line: '    server: {{ kube_apiserver_endpoint }}'
-    backup: yes
+    regexp: '^(\s+)server: https.*'
+    line: '\1server: {{ _kube_apiserver_cluster_internal_endpoint }}'
+    backrefs: true
+    backup: true
   when:
-    - kubeadm_config_api_fqdn is not defined
-    - not is_kube_master
-    - kubeadm_discovery_address != kube_apiserver_endpoint
-  notify: restart kubelet
+    - ('kube_control_plane' not in group_names)
+  notify: Kubeadm | restart kubelet
 
-# FIXME(mattymo): Reconcile kubelet kubeconfig filename for both deploy modes
-- name: Symlink kubelet kubeconfig for calico/canal
-  file:
-    src: "{{ kube_config_dir }}/kubelet.conf"
-    dest: "{{ kube_config_dir }}/node-kubeconfig.yaml"
-    state: link
-    force: yes
-  when:
-    - kube_network_plugin in ['calico','canal']
-    - calico_version is version('v3.3.0', '<')
-
-# FIXME(jjo): need to post-remove kube-proxy until https://github.com/kubernetes/kubeadm/issues/776
-# is fixed
-- name: Delete kube-proxy daemonset if kube_proxy_remove set, e.g. kube_network_plugin providing proxy services
-  shell: "{{ bin_dir }}/kubectl --kubeconfig /etc/kubernetes/admin.conf delete daemonset -n kube-system kube-proxy"
-  delegate_to: "{{groups['kube-master']|first}}"
+- name: Update server field in kube-proxy kubeconfig
+  shell: >-
+    set -o pipefail &&
+    if ! {{ kubectl }} get configmap kube-proxy -n kube-system -o yaml | grep -Fq "server: {{ _kube_apiserver_cluster_internal_endpoint }}"; then
+      {{ kubectl }} get configmap kube-proxy -n kube-system -oyaml |
+      sed 's#server:.*#server: {{ _kube_apiserver_cluster_internal_endpoint }}#g' |
+      {{ kubectl }} replace -f -
+    fi
+  args:
+    executable: /bin/bash
+  register: kube_proxy_server_update
+  changed_when: "'replaced' in kube_proxy_server_update.stdout"
   run_once: true
+  delegate_to: "{{ groups['kube_control_plane'] | first }}"
+  delegate_facts: false
   when:
-    - kube_proxy_remove
-    - is_kube_master
-    - kubeadm_discovery_address != kube_apiserver_endpoint
+    - kube_proxy_deployed
   tags:
     - kube-proxy
+
+- name: Set ca.crt file permission
+  file:
+    path: "{{ kube_cert_dir }}/ca.crt"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Restart all kube-proxy pods to ensure that they load the new configmap
+  command: "{{ kubectl }} delete pod -n kube-system -l k8s-app=kube-proxy --force --grace-period=0"
+  run_once: true
+  delegate_to: "{{ groups['kube_control_plane'] | first }}"
+  delegate_facts: false
+  when:
+    - kube_proxy_deployed
+    - kube_proxy_server_update is changed
+  tags:
+    - kube-proxy
+
+- name: Extract etcd certs from control plane if using etcd kubeadm mode
+  include_tasks: kubeadm_etcd_node.yml
+  when:
+    - etcd_deployment_type == "kubeadm"
+    - inventory_hostname not in groups['kube_control_plane']
+    - kube_network_plugin in ["calico", "flannel", "cilium"] or cilium_deploy_additionally
+    - kube_network_plugin != "calico" or calico_datastore == "etcd"
+    - kube_network_plugin != "cilium" or cilium_identity_allocation_mode != 'crd'

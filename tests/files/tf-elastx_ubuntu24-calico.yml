@@ -1,0 +1,5 @@
+---
+conformance_enabled: true
+
+# Ignore ping errors
+ignore_assert_errors: true

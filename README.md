@@ -1,206 +1,225 @@
+# Deploy a Production Ready Kubernetes Cluster
+
 ![Kubernetes Logo](https://raw.githubusercontent.com/kubernetes-sigs/kubespray/master/docs/img/kubernetes-logo.png)
 
-Deploy a Production Ready Kubernetes Cluster
-============================================
-
-If you have questions, join us on the [kubernetes slack](https://kubernetes.slack.com), channel **\#kubespray**.
+If you have questions, check the documentation at [kubespray.io](https://kubespray.io) and join us on the [kubernetes slack](https://kubernetes.slack.com), channel **\#kubespray**.
 You can get your invite [here](http://slack.k8s.io/)
 
--   Can be deployed on **AWS, GCE, Azure, OpenStack, vSphere, Oracle Cloud Infrastructure (Experimental), or Baremetal**
--   **Highly available** cluster
--   **Composable** (Choice of the network plugin for instance)
--   Supports most popular **Linux distributions**
--   **Continuous integration tests**
+- Can be deployed on **[AWS](docs/cloud_providers/aws.md), GCE, [Azure](docs/cloud_providers/azure.md), [OpenStack](docs/cloud_controllers/openstack.md), [vSphere](docs/cloud_controllers/vsphere.md), Oracle Cloud Infrastructure (Experimental), or Baremetal**
+- **Highly available** cluster
+- **Composable** (Choice of the network plugin for instance)
+- Supports most popular **Linux distributions**
+- **Continuous integration tests**
 
-Quick Start
------------
+## Quick Start
 
-To deploy the cluster you can use :
+Below are several ways to use Kubespray to deploy a Kubernetes cluster.
+
+### Docker
+
+Ensure you have installed Docker then
+
+```ShellSession
+docker run --rm -it --mount type=bind,source="$(pwd)"/inventory/sample,dst=/inventory \
+  --mount type=bind,source="${HOME}"/.ssh/id_rsa,dst=/root/.ssh/id_rsa \
+  quay.io/kubespray/kubespray:v2.31.0 bash
+# Inside the container you may now run the kubespray playbooks:
+ansible-playbook -i /inventory/inventory.ini --private-key /root/.ssh/id_rsa cluster.yml
+```
 
 ### Ansible
 
-#### Ansible version
-
-Ansible v2.7.0 is failing and/or produce unexpected results due to [ansible/ansible/issues/46600](https://github.com/ansible/ansible/issues/46600)
-
 #### Usage
 
-    # Install dependencies from ``requirements.txt``
-    sudo pip install -r requirements.txt
+See [Getting started](/docs/getting_started/getting-started.md)
 
-    # Copy ``inventory/sample`` as ``inventory/mycluster``
-    cp -rfp inventory/sample inventory/mycluster
+#### Collection
 
-    # Update Ansible inventory file with inventory builder
-    declare -a IPS=(10.10.1.3 10.10.1.4 10.10.1.5)
-    CONFIG_FILE=inventory/mycluster/hosts.ini python3 contrib/inventory_builder/inventory.py ${IPS[@]}
-
-    # Review and change parameters under ``inventory/mycluster/group_vars``
-    cat inventory/mycluster/group_vars/all/all.yml
-    cat inventory/mycluster/group_vars/k8s-cluster/k8s-cluster.yml
-
-    # Deploy Kubespray with Ansible Playbook - run the playbook as root
-    # The option `-b` is required, as for example writing SSL keys in /etc/,
-    # installing packages and interacting with various systemd daemons.
-    # Without -b the playbook will fail to run!
-    ansible-playbook -i inventory/mycluster/hosts.ini --become --become-user=root cluster.yml
-
-Note: When Ansible is already installed via system packages on the control machine, other python packages installed via `sudo pip install -r requirements.txt` will go to a different directory tree (e.g. `/usr/local/lib/python2.7/dist-packages` on Ubuntu) from Ansible's (e.g. `/usr/lib/python2.7/dist-packages/ansible` still on Ubuntu).
-As a consequence, `ansible-playbook` command will fail with:
-```
-ERROR! no action detected in task. This often indicates a misspelled module name, or incorrect module path.
-```
-probably pointing on a task depending on a module present in requirements.txt (i.e. "unseal vault").
-
-One way of solving this would be to uninstall the Ansible package and then, to install it via pip but it is not always possible.
-A workaround consists of setting `ANSIBLE_LIBRARY` and `ANSIBLE_MODULE_UTILS` environment variables respectively to the `ansible/modules` and `ansible/module_utils` subdirectories of pip packages installation location, which can be found in the Location field of the output of `pip show [package]` before executing `ansible-playbook`.
+See [here](docs/ansible/ansible_collection.md) if you wish to use this repository as an Ansible collection
 
 ### Vagrant
 
-For Vagrant we need to install python dependencies for provisioning tasks.
-Check if Python and pip are installed:
+For Vagrant we need to install Python dependencies for provisioning tasks.
+Check that ``Python`` and ``pip`` are installed:
 
-    python -V && pip -V
+```ShellSession
+python -V && pip -V
+```
 
 If this returns the version of the software, you're good to go. If not, download and install Python from here <https://www.python.org/downloads/source/>
-Install the necessary requirements
 
-    sudo pip install -r requirements.txt
-    vagrant up
+Install Ansible according to [Ansible installation guide](/docs/ansible/ansible.md#installing-ansible)
+then run the following step:
 
-Documents
----------
+```ShellSession
+vagrant up
+```
 
--   [Requirements](#requirements)
--   [Kubespray vs ...](docs/comparisons.md)
--   [Getting started](docs/getting-started.md)
--   [Ansible inventory and tags](docs/ansible.md)
--   [Integration with existing ansible repo](docs/integration.md)
--   [Deployment data variables](docs/vars.md)
--   [DNS stack](docs/dns-stack.md)
--   [HA mode](docs/ha-mode.md)
--   [Network plugins](#network-plugins)
--   [Vagrant install](docs/vagrant.md)
--   [CoreOS bootstrap](docs/coreos.md)
--   [Debian Jessie setup](docs/debian.md)
--   [openSUSE setup](docs/opensuse.md)
--   [Downloaded artifacts](docs/downloads.md)
--   [Cloud providers](docs/cloud.md)
--   [OpenStack](docs/openstack.md)
--   [AWS](docs/aws.md)
--   [Azure](docs/azure.md)
--   [vSphere](docs/vsphere.md)
--   [Large deployments](docs/large-deployments.md)
--   [Upgrades basics](docs/upgrades.md)
--   [Roadmap](docs/roadmap.md)
+## Documents
 
-Supported Linux Distributions
------------------------------
+- [Requirements](#requirements)
+- [Kubespray vs ...](docs/getting_started/comparisons.md)
+- [Getting started](docs/getting_started/getting-started.md)
+- [Setting up your first cluster](docs/getting_started/setting-up-your-first-cluster.md)
+- [Ansible inventory and tags](docs/ansible/ansible.md)
+- [Integration with existing ansible repo](docs/operations/integration.md)
+- [Deployment data variables](docs/ansible/vars.md)
+- [DNS stack](docs/advanced/dns-stack.md)
+- [HA mode](docs/operations/ha-mode.md)
+- [Network plugins](#network-plugins)
+- [Vagrant install](docs/developers/vagrant.md)
+- [Flatcar Container Linux bootstrap](docs/operating_systems/flatcar.md)
+- [Fedora CoreOS bootstrap](docs/operating_systems/fcos.md)
+- [openSUSE setup](docs/operating_systems/opensuse.md)
+- [Downloaded artifacts](docs/advanced/downloads.md)
+- [OpenStack](docs/cloud_controllers/openstack.md)
+- [vSphere](docs/cloud_controllers/vsphere.md)
+- [Large deployments](docs/operations/large-deployments.md)
+- [Adding/replacing a node](docs/operations/nodes.md)
+- [Upgrades basics](docs/operations/upgrades.md)
+- [Air-Gap installation](docs/operations/offline-environment.md)
+- [NTP](docs/advanced/ntp.md)
+- [Hardening](docs/operations/hardening.md)
+- [Mirror](docs/operations/mirror.md)
+- [Roadmap](docs/roadmap/roadmap.md)
 
--   **Container Linux by CoreOS**
--   **Debian** Buster, Jessie, Stretch, Wheezy
--   **Ubuntu** 16.04, 18.04
--   **CentOS/RHEL** 7
--   **Fedora** 28
--   **Fedora/CentOS** Atomic
--   **openSUSE** Leap 42.3/Tumbleweed
+## Supported Linux Distributions
 
-Note: Upstart/SysV init based OS types are not supported.
+- **Flatcar Container Linux by Kinvolk**
+- **Debian** Bookworm, Trixie
+- **Ubuntu** 22.04, 24.04, 26.04
+- **CentOS Stream / RHEL** 9, 10
+- **Fedora** 39, 40, 41, 42
+- **Fedora CoreOS** (see [fcos Note](docs/operating_systems/fcos.md))
+- **openSUSE** Leap 16.x/Tumbleweed/MicroOS (containerd only; see [openSUSE notes](docs/operating_systems/opensuse.md))
+- **Oracle Linux** 9, 10
+- **Alma Linux** 9, 10
+- **Rocky Linux** 9, 10 (experimental in 10: see [Rocky Linux 10 notes](docs/operating_systems/rhel.md#rocky-linux-10))
+- **Kylin Linux Advanced Server V10** (experimental: see [kylin linux notes](docs/operating_systems/kylinlinux.md))
+- **Amazon Linux 2** (experimental: see [amazon linux notes](docs/operating_systems/amazonlinux.md))
+- **UOS Linux** (experimental: see [uos linux notes](docs/operating_systems/uoslinux.md))
+- **openEuler** (experimental: see [openEuler notes](docs/operating_systems/openeuler.md))
 
-Supported Components
---------------------
+Note:
 
--   Core
-    -   [kubernetes](https://github.com/kubernetes/kubernetes) v1.13.3
-    -   [etcd](https://github.com/coreos/etcd) v3.2.24
-    -   [docker](https://www.docker.com/) v18.06 (see note)
-    -   [rkt](https://github.com/rkt/rkt) v1.21.0 (see Note 2)
-    -   [cri-o](http://cri-o.io/) v1.11.5 (experimental: see [CRI-O Note](docs/cri-o.md). Only on centos based OS)
--   Network Plugin
-    -   [calico](https://github.com/projectcalico/calico) v3.4.0
-    -   [canal](https://github.com/projectcalico/canal) (given calico/flannel versions)
-    -   [cilium](https://github.com/cilium/cilium) v1.3.0
-    -   [contiv](https://github.com/contiv/install) v1.2.1
-    -   [flanneld](https://github.com/coreos/flannel) v0.11.0
-    -   [kube-router](https://github.com/cloudnativelabs/kube-router) v0.2.1
-    -   [multus](https://github.com/intel/multus-cni) v3.1.autoconf
-    -   [weave](https://github.com/weaveworks/weave) v2.5.0
--   Application
-    -   [cephfs-provisioner](https://github.com/kubernetes-incubator/external-storage) v2.1.0-k8s1.11
-    -   [cert-manager](https://github.com/jetstack/cert-manager) v0.5.2
-    -   [coredns](https://github.com/coredns/coredns) v1.2.6
-    -   [ingress-nginx](https://github.com/kubernetes/ingress-nginx) v0.21.0
+- Upstart/SysV init based OS types are not supported.
+- [Kernel requirements](docs/operations/kernel-requirements.md) (please read if the OS kernel version is < 4.19).
 
-Note: The list of validated [docker versions](https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG-1.13.md) was updated to 1.11.1, 1.12.1, 1.13.1, 17.03, 17.06, 17.09, 18.06. kubeadm now properly recognizes Docker 18.09.0 and newer, but still treats 18.06 as the default supported version. The kubelet might break on docker's non-standard version numbering (it no longer uses semantic versioning). To ensure auto-updates don't break your cluster look into e.g. yum versionlock plugin or apt pin).
+## Supported Components
 
-Note 2: rkt support as docker alternative is limited to control plane (etcd and
-kubelet). Docker is still used for Kubernetes cluster workloads and network
-plugins' related OS services. Also note, only one of the supported network
-plugins can be deployed for a given single cluster.
+<!-- BEGIN ANSIBLE MANAGED BLOCK -->
 
-Requirements
-------------
+- Core
+  - [kubernetes](https://github.com/kubernetes/kubernetes) 1.37.1
+  - [etcd](https://github.com/etcd-io/etcd) 3.7.2
+  - [docker](https://www.docker.com/) 28.3
+  - [containerd](https://containerd.io/) 2.3.7
+  - [cri-o](https://cri-o.io/) 1.36.7 (experimental: see [CRI-O Note](docs/CRI/cri-o.md). Only on fedora, ubuntu and centos based OS)
+- Network Plugin
+  - [cni-plugins](https://github.com/containernetworking/plugins) 1.9.1
+  - [calico](https://github.com/projectcalico/calico) 3.31.7
+  - [cilium](https://github.com/cilium/cilium) 1.20.4
+  - [flannel](https://github.com/flannel-io/flannel) 0.28.10
+  - [kube-ovn](https://github.com/alauda/kube-ovn) 1.12.21
+  - [kube-router](https://github.com/cloudnativelabs/kube-router) 2.1.1
+  - [multus](https://github.com/k8snetworkplumbingwg/multus-cni) 4.2.2
+  - [kube-vip](https://github.com/kube-vip/kube-vip) 1.0.3
+- Application
+  - [cert-manager](https://github.com/jetstack/cert-manager) 1.15.3
+  - [coredns](https://github.com/coredns/coredns) 1.14.6
+  - [argocd](https://argoproj.github.io/) 3.5.5
+  - [helm](https://helm.sh/) 3.22.0
+  - [metallb](https://metallb.universe.tf/) 0.13.9
+  - [registry](https://github.com/distribution/distribution) 3.1.2
+- Storage Plugin
+  - [aws-ebs-csi-plugin](https://github.com/kubernetes-sigs/aws-ebs-csi-driver) 0.5.0
+  - [azure-csi-plugin](https://github.com/kubernetes-sigs/azuredisk-csi-driver) 1.10.0
+  - [cinder-csi-plugin](https://github.com/kubernetes/cloud-provider-openstack/blob/master/docs/cinder-csi-plugin/using-cinder-csi-plugin.md) 1.30.0
+  - [gcp-pd-csi-plugin](https://github.com/kubernetes-sigs/gcp-compute-persistent-disk-csi-driver) 1.9.2
+  - [local-path-provisioner](https://github.com/rancher/local-path-provisioner) 0.0.37
+  - [local-volume-provisioner](https://github.com/kubernetes-sigs/sig-storage-local-static-provisioner) 2.10.0
+  - [node-feature-discovery](https://github.com/kubernetes-sigs/node-feature-discovery) 0.19.0
 
--   **Ansible v2.6 (or newer) and python-netaddr is installed on the machine
-    that will run Ansible commands**
--   **Jinja 2.9 (or newer) is required to run the Ansible Playbooks**
--   The target servers must have **access to the Internet** in order to pull docker images. Otherwise, additional configuration is required (See [Offline Environment](https://github.com/kubernetes-sigs/kubespray/blob/master/docs/downloads.md#offline-environment))
--   The target servers are configured to allow **IPv4 forwarding**.
--   **Your ssh key must be copied** to all the servers part of your inventory.
--   The **firewalls are not managed**, you'll need to implement your own rules the way you used to.
+<!-- END ANSIBLE MANAGED BLOCK -->
+
+## Container Runtime Notes
+
+- The CRI-O minor version should match the Kubernetes minor version.
+
+## Requirements
+
+- **Minimum required version of Kubernetes is v1.35.0**
+
+- **Ansible 14 (ansible-core 2.21), Jinja 3.1+ and python-netaddr are installed on the machine that will run Ansible commands**
+- The target servers must have **access to the Internet** in order to pull docker images. Otherwise, additional configuration is required (See [Offline Environment](docs/operations/offline-environment.md))
+- The target servers are configured to allow **IPv4 forwarding**.
+- If using IPv6 for pods and services, the target servers are configured to allow **IPv6 forwarding**.
+- The **firewalls are not managed**, you'll need to implement your own rules the way you used to.
     in order to avoid any issue during deployment you should disable your firewall.
--   If kubespray is ran from non-root user account, correct privilege escalation method
+- If kubespray is run from non-root user account, correct privilege escalation method
     should be configured in the target servers. Then the `ansible_become` flag
     or command parameters `--become or -b` should be specified.
 
-Network Plugins
----------------
+Hardware:
+These limits are safeguarded by Kubespray. Actual requirements for your workload can differ. For a sizing guide go to the [Building Large Clusters](https://kubernetes.io/docs/setup/cluster-large/#size-of-master-and-master-components) guide.
 
-You can choose between 6 network plugins. (default: `calico`, except Vagrant uses `flannel`)
+- Control Plane
+  - Memory: 2 GB
+- Worker Node
+  - Memory: 1 GB
 
--   [flannel](docs/flannel.md): gre/vxlan (layer 2) networking.
+## Network Plugins
 
--   [calico](docs/calico.md): bgp (layer 3) networking.
+You can choose among ten network plugins. (default: `calico`, except Vagrant uses `flannel`)
 
--   [canal](https://github.com/projectcalico/canal): a composition of calico and flannel plugins.
+- [flannel](docs/CNI/flannel.md): gre/vxlan (layer 2) networking.
 
--   [cilium](http://docs.cilium.io/en/latest/): layer 3/4 networking (as well as layer 7 to protect and secure application protocols), supports dynamic insertion of BPF bytecode into the Linux kernel to implement security services, networking and visibility logic.
+- [Calico](https://docs.tigera.io/calico/latest/about/) is a networking and network policy provider. Calico supports a flexible set of networking options
+    designed to give you the most efficient networking across a range of situations, including non-overlay
+    and overlay networks, with or without BGP. Calico uses the same engine to enforce network policy for hosts,
+    pods, and (if using Istio and Envoy) applications at the service mesh layer.
 
--   [contiv](docs/contiv.md): supports vlan, vxlan, bgp and Cisco SDN networking. This plugin is able to
-    apply firewall policies, segregate containers in multiple network and bridging pods onto physical networks.
+- [cilium](http://docs.cilium.io/en/latest/): layer 3/4 networking (as well as layer 7 to protect and secure application protocols), supports dynamic insertion of BPF bytecode into the Linux kernel to implement security services, networking and visibility logic.
 
--   [weave](docs/weave.md): Weave is a lightweight container overlay network that doesn't require an external K/V database cluster.
-    (Please refer to `weave` [troubleshooting documentation](http://docs.weave.works/weave/latest_release/troubleshooting.html)).
+- [kube-ovn](docs/CNI/kube-ovn.md): Kube-OVN integrates the OVN-based Network Virtualization with Kubernetes. It offers an advanced Container Network Fabric for Enterprises.
 
--   [kube-router](docs/kube-router.md): Kube-router is a L3 CNI for Kubernetes networking aiming to provide operational
+- [kube-router](docs/CNI/kube-router.md): Kube-router is a L3 CNI for Kubernetes networking aiming to provide operational
     simplicity and high performance: it uses IPVS to provide Kube Services Proxy (if setup to replace kube-proxy),
     iptables for network policies, and BGP for ods L3 networking (with optionally BGP peering with out-of-cluster BGP peers).
     It can also optionally advertise routes to Kubernetes cluster Pods CIDRs, ClusterIPs, ExternalIPs and LoadBalancerIPs.
 
--   [multus](docs/multus.md): Multus is a meta CNI plugin that provides multiple network interface support to pods. For each interface Multus delegates CNI calls to secondary CNI plugins such as Calico, macvlan, etc.
+- [macvlan](docs/CNI/macvlan.md): Macvlan is a Linux network driver. Pods have their own unique Mac and Ip address, connected directly the physical (layer 2) network.
 
-The choice is defined with the variable `kube_network_plugin`. There is also an
+- [multus](docs/CNI/multus.md): Multus is a meta CNI plugin that provides multiple network interface support to pods. For each interface Multus delegates CNI calls to secondary CNI plugins such as Calico, macvlan, etc.
+
+- [custom_cni](roles/network-plugin/custom_cni/) : You can specify some manifests that will be applied to the clusters to bring you own CNI and use non-supported ones by Kubespray.
+  See `tests/files/custom_cni/README.md` and `tests/files/custom_cni/values.yaml`for an example with a CNI provided by a Helm Chart.
+
+The network plugin to use is defined by the variable `kube_network_plugin`. There is also an
 option to leverage built-in cloud provider networking instead.
-See also [Network checker](docs/netcheck.md).
+See also [Network checker](docs/advanced/netcheck.md).
 
-Community docs and resources
-----------------------------
+## Ingress Plugins
 
--   [kubernetes.io/docs/getting-started-guides/kubespray/](https://kubernetes.io/docs/getting-started-guides/kubespray/)
--   [kubespray, monitoring and logging](https://github.com/gregbkr/kubernetes-kargo-logging-monitoring) by @gregbkr
--   [Deploy Kubernetes w/ Ansible & Terraform](https://rsmitty.github.io/Terraform-Ansible-Kubernetes/) by @rsmitty
--   [Deploy a Kubernetes Cluster with Kubespray (video)](https://www.youtube.com/watch?v=N9q51JgbWu8)
+- [metallb](docs/ingress/metallb.md): the MetalLB bare-metal service LoadBalancer provider.
 
-Tools and projects on top of Kubespray
---------------------------------------
+## Community docs and resources
 
--   [Digital Rebar Provision](https://github.com/digitalrebar/provision/blob/master/doc/integrations/ansible.rst)
--   [Terraform Contrib](https://github.com/kubernetes-sigs/kubespray/tree/master/contrib/terraform)
+- [kubernetes.io/docs/setup/production-environment/tools/kubespray/](https://kubernetes.io/docs/setup/production-environment/tools/kubespray/)
+- [kubespray, monitoring and logging](https://github.com/gregbkr/kubernetes-kargo-logging-monitoring) by @gregbkr
+- [Deploy Kubernetes w/ Ansible & Terraform](https://rsmitty.github.io/Terraform-Ansible-Kubernetes/) by @rsmitty
+- [Deploy a Kubernetes Cluster with Kubespray (video)](https://www.youtube.com/watch?v=CJ5G4GpqDy0)
 
-CI Tests
---------
+## Tools and projects on top of Kubespray
 
-[![Build graphs](https://gitlab.com/kubespray-ci/kubernetes-incubator__kubespray/badges/master/build.svg)](https://gitlab.com/kubespray-ci/kubernetes-incubator__kubespray/pipelines)
+- [Digital Rebar Provision](https://github.com/digitalrebar/provision/blob/v4/doc/integrations/ansible.rst)
+- [Terraform Contrib](https://github.com/kubernetes-sigs/kubespray/tree/master/contrib/terraform)
+- [Kubean](https://github.com/kubean-io/kubean)
 
-CI/end-to-end tests sponsored by Google (GCE)
-See the [test matrix](docs/test_cases.md) for details.
+## CI Tests
+
+[![Build graphs](https://gitlab.com/kargo-ci/kubernetes-sigs-kubespray/badges/master/pipeline.svg)](https://gitlab.com/kargo-ci/kubernetes-sigs-kubespray/-/pipelines)
+
+CI/end-to-end tests sponsored by: [CNCF](https://cncf.io), [Equinix Metal](https://metal.equinix.com/), [OVHcloud](https://www.ovhcloud.com/), [ELASTX](https://elastx.se/).
+
+See the [test matrix](docs/developers/test_cases.md) for details.

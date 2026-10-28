@@ -1,57 +1,48 @@
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: "coredns{{ coredns_ordinal_suffix | default('') }}"
+  name: "coredns{{ coredns_ordinal_suffix }}"
   namespace: kube-system
   labels:
-    k8s-app: "coredns{{ coredns_ordinal_suffix | default('') }}"
-    kubernetes.io/cluster-service: "true"
+    k8s-app: "kube-dns{{ coredns_ordinal_suffix }}"
     addonmanager.kubernetes.io/mode: Reconcile
-    kubernetes.io/name: "coredns{{ coredns_ordinal_suffix | default('') }}"
+    kubernetes.io/name: "coredns{{ coredns_ordinal_suffix }}"
 spec:
+{% if not enable_dns_autoscaler %}
+  replicas: {{ coredns_replicas }}
+{% endif %}
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 0
+      maxUnavailable: 1
       maxSurge: 10%
   selector:
     matchLabels:
-      k8s-app: coredns{{ coredns_ordinal_suffix | default('') }}
+      k8s-app: kube-dns{{ coredns_ordinal_suffix }}
   template:
     metadata:
       labels:
-        k8s-app: coredns{{ coredns_ordinal_suffix | default('') }}
+        k8s-app: kube-dns{{ coredns_ordinal_suffix }}
       annotations:
-        seccomp.security.alpha.kubernetes.io/pod: 'docker/default'
+        createdby: 'kubespray'
+        checksum/config: "{{ lookup('template', 'coredns-config.yml.j2') | checksum }}"
     spec:
-{% if kube_version is version('v1.11.1', '>=') %}
-      priorityClassName: system-cluster-critical
-{% endif %}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       nodeSelector:
-        beta.kubernetes.io/os: linux
+        {{ coredns_deployment_nodeselector }}
+      priorityClassName: system-cluster-critical
       serviceAccountName: coredns
       tolerations:
-        - key: node-role.kubernetes.io/master
+        - key: node-role.kubernetes.io/control-plane
           effect: NoSchedule
-        - key: "CriticalAddonsOnly"
-          operator: "Exists"
+{% if dns_extra_tolerations is defined %}
+        {{ dns_extra_tolerations | list | to_nice_yaml(indent=2) | indent(8) }}
+{% endif %}
       affinity:
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-          - topologyKey: "kubernetes.io/hostname"
-            labelSelector:
-              matchLabels:
-                k8s-app: coredns{{ coredns_ordinal_suffix | default('') }}
-        nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            preference:
-              matchExpressions:
-              - key: node-role.kubernetes.io/master
-                operator: In
-                values:
-                - ""
+        {{ coredns_affinity | to_nice_yaml(indent=2) | indent(8) }}
       containers:
       - name: coredns
         image: "{{ coredns_image_repo }}:{{ coredns_image_tag }}"
@@ -62,6 +53,9 @@ spec:
           # guaranteed class. Currently, this container falls into the
           # "burstable" category so the kubelet doesn't backoff from restarting it.
           limits:
+{% if dns_cpu_limit is defined %}
+            cpu: {{ dns_cpu_limit }}
+{% endif %}
             memory: {{ dns_memory_limit }}
           requests:
             cpu: {{ dns_cpu_requests }}
@@ -93,10 +87,17 @@ spec:
             path: /health
             port: 8080
             scheme: HTTP
-          initialDelaySeconds: 60
           timeoutSeconds: 5
           successThreshold: 1
-          failureThreshold: 5
+          failureThreshold: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8181
+            scheme: HTTP
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 10
       dnsPolicy: Default
       volumes:
         - name: config-volume
@@ -105,3 +106,7 @@ spec:
             items:
             - key: Corefile
               path: Corefile
+{% if dns_etchosts | default(None) %}
+            - key: hosts
+              path: hosts
+{% endif %}

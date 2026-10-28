@@ -1,4 +1,6 @@
- - hosts: image-builder
-   gather_facts: false
-   roles:
-     - kubevirt-images
+---
+- name: Build kubevirt images
+  hosts: "{{ kubevirt_images_target_host | default('image-builder') }}"
+  gather_facts: false
+  roles:
+    - kubevirt-images

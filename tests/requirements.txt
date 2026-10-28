@@ -1,7 +1,4 @@
 -r ../requirements.txt
-yamllint
-apache-libcloud==2.2.1
-boto==2.9.0
-tox
-dopy
-PyCrypto
+distlib==0.4.4 # required for building collections
+molecule==26.10.0
+pytest-testinfra==10.2.2

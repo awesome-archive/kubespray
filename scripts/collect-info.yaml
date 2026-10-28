@@ -1,7 +1,8 @@
 ---
-- hosts: all
+- name: Collect debug info
+  hosts: all
   become: true
-  gather_facts: no
+  gather_facts: false
 
   vars:
     docker_bin_dir: /usr/bin
@@ -30,22 +31,16 @@
       - name: errors_info
         cmd: journalctl -p err --no-pager
       - name: etcd_info
-        cmd: "{{ bin_dir }}/etcdctl --peers={{ etcd_access_addresses | default('http://127.0.0.1:2379') }} cluster-health"
+        cmd: "{{ bin_dir }}/etcdctl endpoint --cluster health"
       - name: calico_info
-        cmd: "{{bin_dir}}/calicoctl node status"
+        cmd: "{{ bin_dir }}/calicoctl node status"
         when: '{{ kube_network_plugin == "calico" }}'
       - name: calico_workload_info
-        cmd: "{{bin_dir}}/calicoctl get workloadEndpoint -o wide"
+        cmd: "{{ bin_dir }}/calicoctl get workloadEndpoint -o wide"
         when: '{{ kube_network_plugin == "calico" }}'
       - name: calico_pool_info
-        cmd: "{{bin_dir}}/calicoctl get ippool -o wide"
+        cmd: "{{ bin_dir }}/calicoctl get ippool -o wide"
         when: '{{ kube_network_plugin == "calico" }}'
-      - name: weave_info
-        cmd: weave report
-        when: '{{ kube_network_plugin == "weave" }}'
-      - name: weave_logs
-        cmd: "{{ docker_bin_dir }}/docker logs weave"
-        when: '{{ kube_network_plugin == "weave" }}'
       - name: kube_describe_all
         cmd: "{{ bin_dir }}/kubectl describe all --all-namespaces"
       - name: kube_describe_nodes
@@ -84,7 +79,7 @@
         when: '{{ kube_network_plugin in ["canal", "calico"] }}'
       - name: helm_show_releases_history
         cmd: "for i in `{{ bin_dir }}/helm list -q`; do {{ bin_dir }}/helm history ${i} --col-width=0; done"
-        when: "{{ helm_enabled|default(true) }}"
+        when: "{{ helm_enabled | default(true) }}"
 
     logs:
       - /var/log/syslog
@@ -97,11 +92,15 @@
       - /var/log/dmesg
 
   environment:
-    ETCDCTL_CERT_FILE: "{{ etcd_cert_dir }}/node-{{ inventory_hostname }}.pem"
-    ETCDCTL_KEY_FILE: "{{ etcd_cert_dir }}/node-{{ inventory_hostname }}-key.pem"
+    ETCDCTL_API: "3"
+    ETCDCTL_CERT: "{{ etcd_cert_dir }}/admin-{{ inventory_hostname }}.pem"
+    ETCDCTL_KEY: "{{ etcd_cert_dir }}/admin-{{ inventory_hostname }}-key.pem"
+    ETCDCTL_CACERT: "{{ etcd_cert_dir }}/ca.pem"
+    ETCDCTL_ENDPOINTS: "{{ etcd_access_addresses }}"
 
   tasks:
-    - set_fact:
+    - name: Set etcd_access_addresses
+      set_fact:
         etcd_access_addresses: |-
           {% for item in groups['etcd'] -%}
             https://{{ item }}:2379{% if not loop.last %},{% endif %}
@@ -109,32 +108,40 @@
       when: "'etcd' in groups"
 
     - name: Storing commands output
-      shell: "{{ item.cmd }} 2>&1 | tee {{ item.name }}"
+      shell: "{{ item.cmd }} &> {{ item.name }}"
       failed_when: false
-      with_items: "{{commands}}"
+      with_items: "{{ commands }}"
       when: item.when | default(True)
-      no_log: True
+      no_log: true
 
     - name: Fetch results
-      fetch: src={{ item.name }} dest=/tmp/{{ archive_dirname }}/commands
-      with_items: "{{commands}}"
+      fetch:
+        src: "{{ item.name }}"
+        dest: "/tmp/{{ archive_dirname }}/commands"
+      with_items: "{{ commands }}"
       when: item.when | default(True)
       failed_when: false
 
     - name: Fetch logs
-      fetch: src={{ item }} dest=/tmp/{{ archive_dirname }}/logs
-      with_items: "{{logs}}"
+      fetch:
+        src: "{{ item }}"
+        dest: "/tmp/{{ archive_dirname }}/logs"
+      with_items: "{{ logs }}"
       failed_when: false
 
     - name: Pack results and logs
-      archive:
+      community.general.archive:
         path: "/tmp/{{ archive_dirname }}"
-        dest: "{{ dir|default('.') }}/logs.tar.gz"
+        dest: "{{ dir | default('.') }}/logs.tar.gz"
         remove: true
+        mode: "0640"
       delegate_to: localhost
+      connection: local
       become: false
       run_once: true
 
     - name: Clean up collected command outputs
-      file: path={{ item.name }} state=absent
-      with_items: "{{commands}}"
+      file:
+        path: "{{ item.name }}"
+        state: absent
+      with_items: "{{ commands }}"

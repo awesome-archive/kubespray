@@ -15,3 +15,13 @@ variable "network_name" {}
 variable "router_id" {
   default = ""
 }
+
+variable "k8s_masters" {}
+
+variable "k8s_nodes" {}
+
+variable "k8s_master_fips" {}
+
+variable "bastion_fips" {}
+
+variable "router_internal_port_id" {}
